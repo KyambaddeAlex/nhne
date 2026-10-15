@@ -1,0 +1,11 @@
+{
+  "name": "stoic-daily",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed:quotes": "node scripts/seed-quotes.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}
