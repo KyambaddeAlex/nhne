@@ -1,0 +1,17 @@
+{
+  "name": "Stoic Daily",
+  "short_name": "Stoic Daily",
+  "description": "A calm daily practice for Stoic intentions, reflection, and personal growth.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#151715",
+  "theme_color": "#151715",
+  "icons": [
+    {
+      "src": "assets/stoic-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

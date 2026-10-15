@@ -3,9 +3,19 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "seed:quotes": "node scripts/seed-quotes.js"
+    "seed:quotes": "node scripts/seed-quotes.js",
+    "copy:web": "node scripts/copy-web.js",
+    "android:assets": "npx @capacitor/assets generate --android --iconBackgroundColor=#151715 --iconBackgroundColorDark=#151715 --splashBackgroundColor=#151715 --splashBackgroundColorDark=#151715",
+    "android:sync": "npm run copy:web && npm run android:assets && cap sync android",
+    "android:apk": "npm run android:sync && cd android && gradlew.bat assembleDebug"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
     "firebase-admin": "^13.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
+    "@capacitor/assets": "^3.0.5"
   }
 }

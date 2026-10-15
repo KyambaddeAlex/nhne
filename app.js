@@ -23,7 +23,6 @@ const configured = ['apiKey', 'authDomain', 'projectId', 'appId']
     .every((key) => typeof firebaseConfig[key] === 'string' && firebaseConfig[key].trim());
 let auth = null;
 let db = null;
-let storage = null;
 let currentUser = null;
 let reflection = null;
 let achievements = [];
@@ -133,24 +132,37 @@ function createResizedProfilePhoto(file) {
         const image = new Image();
         image.onload = () => {
             URL.revokeObjectURL(sourceUrl);
-            const maxDimension = 512;
-            const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+            let maxDimension = 512;
+            let quality = 0.8;
             const canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-            canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
             const context = canvas.getContext('2d');
             if (!context) {
                 reject(new Error('Your browser could not prepare the profile photo.'));
                 return;
             }
-            context.drawImage(image, 0, 0, canvas.width, canvas.height);
-            canvas.toBlob((blob) => {
-                if (!blob) {
-                    reject(new Error('Your browser could not prepare the profile photo.'));
-                    return;
-                }
-                resolve(blob);
-            }, 'image/jpeg', 0.82);
+            const resize = () => {
+                const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+                canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+                canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+                context.drawImage(image, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob((blob) => {
+                    if (!blob) {
+                        reject(new Error('Your browser could not prepare the profile photo.'));
+                    } else if (blob.size <= 400 * 1024) {
+                        resolve(blob);
+                    } else if (quality > 0.5) {
+                        quality = Math.max(0.5, quality - 0.1);
+                        resize();
+                    } else if (maxDimension > 256) {
+                        maxDimension = Math.floor(maxDimension * 0.75);
+                        quality = 0.8;
+                        resize();
+                    } else {
+                        reject(new Error('This photo could not be compressed enough to save within your free profile storage limit. Choose a smaller image.'));
+                    }
+                }, 'image/jpeg', quality);
+            };
+            resize();
         };
         image.onerror = () => {
             URL.revokeObjectURL(sourceUrl);
@@ -162,30 +174,12 @@ function createResizedProfilePhoto(file) {
 
 async function uploadProfilePhoto(file) {
     const imageBlob = await createResizedProfilePhoto(file);
-    if (storageMode === 'local') {
-        return await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = () => reject(reader.error || new Error('Could not read the selected photo.'));
-            reader.readAsDataURL(imageBlob);
-        });
-    }
-    storage = storage || firebase.storage();
-    const photoPath = `users/${currentUser.uid}/profile/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
-    const reference = storage.ref(photoPath);
-    await reference.put(imageBlob, { contentType: 'image/jpeg', cacheControl: 'private,max-age=3600' });
-    try {
-        return { photoURL: await reference.getDownloadURL(), photoPath };
-    } catch (error) {
-        await reference.delete().catch((cleanupError) => console.error('Could not clean up uploaded profile photo.', cleanupError));
-        throw error;
-    }
-}
-
-async function deleteProfilePhoto(photoPath) {
-    if (storageMode !== 'local' && photoPath) {
-        await storage.ref(photoPath).delete();
-    }
+    return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('Could not read the selected photo.'));
+        reader.readAsDataURL(imageBlob);
+    });
 }
 
 async function loadReflection() {
@@ -239,16 +233,17 @@ function describeError(error) {
         'auth/invalid-credential': 'Email or password was not recognized.',
         'auth/invalid-email': 'Enter a valid email address.',
         'auth/weak-password': 'Choose a password with at least 6 characters.',
+        'auth/operation-not-allowed': 'Email and password accounts are not enabled for this Firebase project. In Firebase Console, open Authentication → Sign-in method and enable Email/Password.',
+        'auth/admin-restricted-operation': 'Email and password accounts are not enabled for this Firebase project. In Firebase Console, open Authentication → Sign-in method and enable Email/Password.',
+        'auth/unauthorized-domain': 'This app address is not authorized for Firebase Authentication. Add its hostname under Firebase Console → Authentication → Settings → Authorized domains.',
+        'auth/invalid-api-key': 'Firebase rejected the web API key. The key shown in Firebase Console is being rejected by Google APIs; ask the Google Cloud project owner to create or restore a valid web API key and allow the Identity Toolkit API.',
+        'auth/configuration-not-found': 'Firebase Authentication is not configured for this project. Enable Authentication in the Firebase Console.',
+        'auth/too-many-requests': 'Firebase temporarily blocked sign-in attempts. Wait a little and try again.',
         'auth/network-request-failed': 'Network error. Check your connection and try again.',
         'permission-denied': 'Firestore denied this request. Check your Firebase Security Rules.',
         'unavailable': 'Firebase is temporarily unavailable. Please try again.',
-        'storage/unauthorized': 'Firebase Storage denied this photo upload. Deploy the included storage rules and try again.',
-        'storage/unauthenticated': 'Sign in again before uploading a profile photo.',
-        'storage/bucket-not-found': 'Firebase Storage is not enabled for this project. Enable Storage in the Firebase Console.',
-        'storage/no-default-bucket': 'Add the Firebase Storage bucket to firebase-config.js, then reload the app.',
-        'storage/canceled': 'The photo upload was canceled.',
-        'storage/quota-exceeded': 'Firebase Storage quota has been exceeded.',
-        'storage/unknown': 'Firebase Storage could not complete the photo upload. Check your Storage setup and try again.'
+        'resource-exhausted': 'Firebase’s free Firestore quota has been reached. Try again after the daily quota resets.',
+        'invalid-argument': 'Firebase could not save this profile. Try a smaller profile photo or shorter details.'
     };
     return messages[error.code] || `Request failed: ${error.message || 'Unknown error'}`;
 }
@@ -278,7 +273,6 @@ function renderAuth() {
                         <button class="button button-primary button-full" type="submit">Sign in</button>
                         <button class="button button-quiet button-full" type="button" data-action="signup">Create an account</button>
                         <div class="auth-divider"><span>or</span></div>
-                        <button class="button button-secondary button-full" type="button" data-action="anonymous">Continue anonymously</button>
                     </form>
                 ` : `
                     <div class="welcome-note">
@@ -311,7 +305,6 @@ function renderAuth() {
         }
         await auth.createUserWithEmailAndPassword(data.get('email'), data.get('password'));
     }));
-    root.querySelector('[data-action="anonymous"]')?.addEventListener('click', () => runSafely(() => auth.signInAnonymously()));
     root.querySelector('[data-action="local"]')?.addEventListener('click', () => {
         runSafely(async () => {
             storageMode = 'local';
@@ -459,7 +452,7 @@ function renderDashboard() {
                             </div>
                             <div class="photo-editor-controls">
                                 <label class="photo-file-label">Profile photo<input id="profile-photo-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
-                                <p>JPEG, PNG, or WebP · up to 5 MB. Resized before upload.</p>
+                                <p>JPEG, PNG, or WebP · up to 5 MB. Compressed before saving.</p>
                                 <button class="text-button" type="button" data-action="remove-photo">Remove photo</button>
                             </div>
                         </div>
@@ -470,7 +463,7 @@ function renderDashboard() {
                         </div>
                         <label>Location<input name="location" maxlength="100" autocomplete="address-level2" value="${escapeHtml(profile.location || '')}" placeholder="City or region (optional)"></label>
                         <label>About me<textarea name="about" rows="4" maxlength="500" placeholder="A few words about yourself, your values, or what you're working toward...">${escapeHtml(profile.about || '')}</textarea></label>
-                        <p class="profile-privacy-note">Your profile details and photo are stored under your Firebase user account. Keep the photo download link private.</p>
+                        <p class="profile-privacy-note">Your profile details and compressed photo are stored in your private Firebase profile.</p>
                         <div class="profile-form-actions"><button class="button button-quiet" type="button" data-action="close-profile">Cancel</button><button class="button button-primary profile-save-button" type="submit">Save profile</button></div>
                     </form>
                 </section>
@@ -528,59 +521,33 @@ function bindDashboardEvents() {
             const data = new FormData(event.currentTarget);
             const saveButton = root.querySelector('.profile-save-button');
             saveButton.disabled = true;
-            saveButton.textContent = pendingProfilePhoto ? 'Uploading photo…' : 'Saving…';
-            let uploadedPhotoPath = null;
+            saveButton.textContent = pendingProfilePhoto ? 'Preparing photo…' : 'Saving…';
             try {
                 let photoChanges = {};
                 if (pendingProfilePhoto) {
-                    const uploaded = await uploadProfilePhoto(pendingProfilePhoto);
-                    if (typeof uploaded === 'string') {
-                        photoChanges = { photoURL: uploaded, photoPath: null };
-                    } else {
-                        photoChanges = uploaded;
-                        uploadedPhotoPath = uploaded.photoPath;
-                    }
+                    photoChanges = { photoURL: await uploadProfilePhoto(pendingProfilePhoto), photoPath: null };
                 } else if (removeProfilePhoto) {
                     photoChanges = { photoURL: null, photoPath: null };
                 }
-                const previousPhotoPath = profile.photoPath;
-                try {
-                    await saveProfile({
-                        displayName: data.get('displayName') || '',
-                        age: data.get('age') || '',
-                        occupation: data.get('occupation') || '',
-                        location: data.get('location') || '',
-                        about: data.get('about') || '',
-                        ...photoChanges
-                    });
-                } catch (error) {
-                    if (uploadedPhotoPath) {
-                        await deleteProfilePhoto(uploadedPhotoPath).catch((cleanupError) => {
-                            console.error('Could not clean up an unsaved profile photo.', cleanupError);
-                        });
-                    }
-                    throw error;
-                }
+                await saveProfile({
+                    displayName: data.get('displayName') || '',
+                    age: data.get('age') || '',
+                    occupation: data.get('occupation') || '',
+                    location: data.get('location') || '',
+                    about: data.get('about') || '',
+                    ...photoChanges
+                });
                 pendingProfilePhoto = null;
                 removeProfilePhoto = false;
                 clearPendingPhotoPreview();
                 renderDashboard();
-                if (previousPhotoPath && previousPhotoPath !== profile.photoPath) {
-                    try {
-                        await deleteProfilePhoto(previousPhotoPath);
-                    } catch (error) {
-                        console.error(error);
-                        showMessage('Your profile was saved, but the previous photo could not be deleted from Storage.', 'info');
-                        return;
-                    }
-                }
                 showMessage('Your profile has been saved.', 'success');
             } finally {
                 if (root.querySelector('.profile-save-button')) {
                     const button = root.querySelector('.profile-save-button');
                     button.disabled = false;
                     button.textContent = pendingProfilePhoto
-                        ? 'Upload and save profile'
+                        ? 'Save profile'
                         : removeProfilePhoto ? 'Remove photo and save' : 'Save profile';
                 }
             }
@@ -606,7 +573,7 @@ function bindDashboardEvents() {
         pendingPhotoPreviewUrl = URL.createObjectURL(file);
         const preview = root.querySelector('#profile-photo-preview');
         preview.innerHTML = `<img class="profile-photo" src="${pendingPhotoPreviewUrl}" alt="Selected profile photo preview">`;
-        root.querySelector('.profile-save-button').textContent = 'Upload and save profile';
+        root.querySelector('.profile-save-button').textContent = 'Save profile';
     });
     root.querySelector('[data-action="remove-photo"]').addEventListener('click', () => {
         pendingProfilePhoto = null;

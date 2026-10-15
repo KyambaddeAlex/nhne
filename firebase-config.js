@@ -1,7 +1,7 @@
 // Firebase web config is public by design. Protect user data with Firestore
 // Security Rules and enable only the Firebase products this app uses.
 export const firebaseConfig = {
-    apiKey: "AIzaSyDqMCM_K_oxRGlpDyX1751Kst-1Ckk-L-rA",
+    apiKey: "AIzaSyDQkQhNWB8n0ogGAUhAGEA4tCG3lyR1hh0",
     authDomain: "stoic-18305.firebaseapp.com",
     databaseURL: "https://stoic-18305-default-rtdb.firebaseio.com",
     projectId: "stoic-18305",
