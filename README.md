@@ -30,7 +30,7 @@ The dashboard adapts to phone screens with a compact header, sticky section shor
 
 Open this folder through a local static web server (for example, VS Code Live Server). ES modules are not supported when opening `index.html` directly using a `file:` URL.
 
-Firebase is configured for the `stoic-18305` project in `firebase-config.js`. Email/password sign-in is enabled and private Firestore rules are published. If account creation reports an invalid API key, the Google Cloud project owner must create or restore a valid web API key with the Identity Toolkit API allowed, then update `firebase-config.js`. **Continue on this device** is an optional local-only mode; it stores data in this browser's local storage and does not sync or authenticate.
+Firebase is configured for the `stoic-18305` project in `firebase-config.js`. Email/password sign-in is enabled and the Firebase web API key is configured. Cloud accounts must accept the in-app admin-access notice before using the account. **Continue on this device** is an optional local-only mode; it stores data in this browser's local storage and does not sync or authenticate.
 
 ## Publish on GitHub Pages
 
@@ -48,9 +48,15 @@ The site is static-hosted by GitHub Pages; Firebase provides account sign-in and
 1. In the Firebase Console for `stoic-18305`, **Email/Password** sign-in is enabled for account creation and sign-in.
 2. Create a Cloud Firestore database in the Firebase Console if it does not already exist. This app does not require Firebase Storage or a paid billing upgrade.
 3. Add the hostname where the app is hosted under **Authentication → Settings → Authorized domains** (for GitHub Pages, add `YOUR-USERNAME.github.io`; `localhost` is already authorized for local and Android use).
-4. The owner-only Firestore rules are already published to `stoic-18305`. If you change them, sign in to the Firebase CLI using a Google account with access to the project and run `firebase deploy --only firestore:rules`.
+4. Publish `firestore.rules` to `stoic-18305`. If using the Firebase CLI, sign in with a Google account that has access to the project and run `firebase deploy --only firestore:rules`.
 
-The app writes reflections to `users/{uid}/reflections/{yyyy-mm-dd}`, achievements to `users/{uid}/achievements/{achievementId}`, and profile details to `users/{uid}` in **Cloud Firestore** for the configured `stoic-18305` project. Profile photos are resized and compressed to a maximum of 400 KiB, then saved as a private data URL in the owner's profile document. Firestore rules restrict each user to their own records; Storage and a billing upgrade are not required. Quote documents are readable by signed-in users and not writable from the browser. The `databaseURL` in the Firebase config refers to Realtime Database; this app does not write user records to Realtime Database.
+The app writes reflections to `users/{uid}/reflections/{yyyy-mm-dd}`, achievements to `users/{uid}/achievements/{achievementId}`, and profile details to `users/{uid}` in **Cloud Firestore** for the configured `stoic-18305` project. Profile photos are resized and compressed to a maximum of 400 KiB, then saved as a private data URL in the owner's profile document. Storage and a billing upgrade are not required. Quote documents are readable by signed-in users and not writable from the browser. The `databaseURL` in the Firebase config refers to Realtime Database; this app does not write user records to Realtime Database.
+
+### Required administrator access notice
+
+Cloud accounts must accept a clear in-app notice before creating an account or opening an existing account. It states that `kyambaddealex55@gmail.com`, the application administrator, can view the account email, display name, and daily reflection records (ambitions, dichotomy items, morning intentions, daily wins saved in a reflection, evening reflections, self-audits, and lessons). Passwords are never visible to the administrator. Users who do not accept must sign out; device-only local mode does not sync to Firebase.
+
+Firestore rules enforce the notice acceptance and allow only the configured admin email to list the minimal `adminDirectory` records and read consenting users' reflections. The admin dashboard is read-only and shows 50 accounts per page and up to the 100 latest reflections for a selected account. It does not grant admin access to the separate achievements collection or profile photo/personal profile fields. Keep the admin email and the rules' consent version in sync with `app.js` if the admin identity or notice changes.
 
 The **My profile** form lets you optionally save a photo, display name, age, occupation, location, and short bio. Personal profile fields and the compressed photo are stored in that user's Firestore document. Email remains managed by Firebase Authentication.
 

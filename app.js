@@ -19,6 +19,8 @@ const dailyAmbitionPrompts = [
     { title: 'Treat one person with patience and fairness', virtue: 'justice', steps: 'Hear their perspective, check my assumptions, respond with respect' }
 ];
 
+const ADMIN_EMAIL = 'kyambaddealex55@gmail.com';
+const ADMIN_ACCESS_VERSION = 'admin-read-v1';
 const configured = ['apiKey', 'authDomain', 'projectId', 'appId']
     .every((key) => typeof firebaseConfig[key] === 'string' && firebaseConfig[key].trim());
 let auth = null;
@@ -32,6 +34,10 @@ let pendingPhotoPreviewUrl = null;
 let removeProfilePhoto = false;
 let currentDate = localDateString();
 let storageMode = 'firebase';
+let pendingSignupConsent = false;
+let adminDirectoryCursor = null;
+let adminDirectoryLastDoc = null;
+let adminDirectoryPreviousCursors = [];
 
 const root = document.querySelector('#app');
 
@@ -78,6 +84,15 @@ function getProfileRef() {
     return db.collection('users').doc(currentUser.uid);
 }
 
+function getAdminDirectoryRef(userId = currentUser.uid) {
+    return db.collection('adminDirectory').doc(userId);
+}
+
+function isAdminUser() {
+    return storageMode === 'firebase'
+        && String(currentUser?.email || '').toLowerCase() === ADMIN_EMAIL;
+}
+
 async function loadProfile() {
     if (storageMode === 'local') {
         return JSON.parse(localStorage.getItem(localKey('profile')) || '{}');
@@ -102,6 +117,11 @@ async function saveProfile(nextProfile) {
         localStorage.setItem(localKey('profile'), JSON.stringify(updatedProfile));
     } else {
         await getProfileRef().set(updatedProfile, { merge: true });
+        await getAdminDirectoryRef().set({
+            email: currentUser.email || '',
+            displayName: updatedProfile.displayName,
+            updatedAt: new Date().toISOString()
+        }, { merge: true });
     }
     profile = updatedProfile;
 }
@@ -257,6 +277,79 @@ async function runSafely(operation) {
     }
 }
 
+async function persistAdminConsent() {
+    const snapshot = await getProfileRef().get();
+    const existing = snapshot.exists ? snapshot.data() : {};
+    const acceptedAt = new Date().toISOString();
+    const displayName = existing.displayName || currentUser.displayName || '';
+    await getProfileRef().set({
+        email: currentUser.email || '',
+        displayName,
+        adminAccessConsentVersion: ADMIN_ACCESS_VERSION,
+        adminAccessAcceptedAt: acceptedAt
+    }, { merge: true });
+    await getAdminDirectoryRef().set({
+        email: currentUser.email || '',
+        displayName,
+        createdAt: existing.adminAccessAcceptedAt || acceptedAt,
+        updatedAt: acceptedAt
+    }, { merge: true });
+}
+
+async function ensureAdminConsent() {
+    const snapshot = await getProfileRef().get();
+    const existing = snapshot.exists ? snapshot.data() : {};
+    if (existing.adminAccessConsentVersion !== ADMIN_ACCESS_VERSION) {
+        if (!pendingSignupConsent) {
+            renderAdminConsent();
+            return false;
+        }
+        await persistAdminConsent();
+        pendingSignupConsent = false;
+    }
+    const profileSnapshot = await getProfileRef().get();
+    const acceptedProfile = profileSnapshot.exists ? profileSnapshot.data() : {};
+    await getAdminDirectoryRef().set({
+        email: currentUser.email || '',
+        displayName: acceptedProfile.displayName || currentUser.displayName || '',
+        createdAt: acceptedProfile.adminAccessAcceptedAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    }, { merge: true });
+    return true;
+}
+
+function renderAdminConsent() {
+    root.innerHTML = `
+        <main class="auth-shell">
+            <section class="auth-card consent-card">
+                <div class="brand-mark">S</div>
+                <p class="eyebrow">REQUIRED ACCOUNT NOTICE</p>
+                <h1>Privacy and admin access</h1>
+                <p class="auth-intro">To use a cloud account, you must understand and accept how account information and reflections are accessed.</p>
+                <div class="admin-consent-details">
+                    <p><strong>Administrator:</strong> ${ADMIN_EMAIL}</p>
+                    <p>The administrator can see your account email, display name, and daily reflection records, including ambitions, control items, morning intentions, evening reflections, lessons, and wins recorded in those reflections.</p>
+                    <p>The administrator cannot see your password. This access is secured by Firebase rules and is limited to the administrator account.</p>
+                    <p>Acceptance is required to use this cloud account. If you do not accept, sign out; your data will not be shown in the app.</p>
+                </div>
+                <div id="notice"></div>
+                <button class="button button-primary button-full" type="button" data-action="accept-admin-access">Accept and continue</button>
+                <button class="button button-quiet button-full" type="button" data-action="signout-consent">Sign out</button>
+            </section>
+        </main>`;
+    root.querySelector('[data-action="accept-admin-access"]').addEventListener('click', () => runSafely(async () => {
+        const button = root.querySelector('[data-action="accept-admin-access"]');
+        button.disabled = true;
+        try {
+            await persistAdminConsent();
+            await enterDashboard();
+        } finally {
+            if (button.isConnected) button.disabled = false;
+        }
+    }));
+    root.querySelector('[data-action="signout-consent"]').addEventListener('click', () => runSafely(() => auth.signOut()));
+}
+
 function renderAuth() {
     root.innerHTML = `
         <main class="auth-shell">
@@ -270,6 +363,7 @@ function renderAuth() {
                     <form id="auth-form" class="auth-form">
                         <label>Email<input type="email" name="email" autocomplete="email" required></label>
                         <label>Password<input type="password" name="password" autocomplete="current-password" minlength="6" required></label>
+                        <label class="admin-consent-checkbox"><input type="checkbox" id="admin-access-consent"> I understand that app administrator ${ADMIN_EMAIL} can view my email address, display name, and all my daily Stoic Daily reflections. This is required to use cloud accounts.</label>
                         <button class="button button-primary button-full" type="submit">Sign in</button>
                         <button class="button button-quiet button-full" type="button" data-action="signup">Create an account</button>
                         <div class="auth-divider"><span>or</span></div>
@@ -303,7 +397,17 @@ function renderAuth() {
             showMessage('Enter your email and password to create an account.');
             return;
         }
-        await auth.createUserWithEmailAndPassword(data.get('email'), data.get('password'));
+        if (!root.querySelector('#admin-access-consent').checked) {
+            showMessage('Please read and accept the required admin-access notice before creating an account.');
+            return;
+        }
+        pendingSignupConsent = true;
+        try {
+            await auth.createUserWithEmailAndPassword(data.get('email'), data.get('password'));
+        } catch (error) {
+            pendingSignupConsent = false;
+            throw error;
+        }
     }));
     root.querySelector('[data-action="local"]')?.addEventListener('click', () => {
         runSafely(async () => {
@@ -313,6 +417,125 @@ function renderAuth() {
             await enterDashboard();
         });
     });
+}
+
+function renderAdminShell(content) {
+    root.innerHTML = `
+        <main class="admin-page">
+            <header class="admin-header">
+                <div>
+                    <p class="eyebrow">STOIC DAILY</p>
+                    <h1>Administrator</h1>
+                    <p>Signed in as ${escapeHtml(currentUser.email || ADMIN_EMAIL)}</p>
+                </div>
+                <div class="admin-header-actions">
+                    <button class="button button-secondary" type="button" data-action="admin-home">My journal</button>
+                    <button class="button button-quiet" type="button" data-action="admin-signout">Sign out</button>
+                </div>
+            </header>
+            <div id="notice"></div>
+            ${content}
+        </main>`;
+    root.querySelector('[data-action="admin-home"]').addEventListener('click', () => renderDashboard());
+    root.querySelector('[data-action="admin-signout"]').addEventListener('click', () => runSafely(() => auth.signOut()));
+}
+
+async function openAdminDirectory() {
+    if (!isAdminUser()) throw new Error('Administrator access is restricted to the configured admin account.');
+    adminDirectoryCursor = null;
+    adminDirectoryPreviousCursors = [];
+    await loadAdminDirectory();
+}
+
+async function loadAdminDirectory() {
+    let query = db.collection('adminDirectory').orderBy('createdAt', 'desc').limit(50);
+    if (adminDirectoryCursor) query = query.startAfter(adminDirectoryCursor);
+    const snapshot = await query.get();
+    const users = snapshot.docs.map((doc) => ({ uid: doc.id, ...doc.data() }));
+    adminDirectoryLastDoc = snapshot.docs[snapshot.docs.length - 1] || null;
+    renderAdminDirectory(users, snapshot.size === 50);
+}
+
+function renderAdminDirectory(users, hasMore) {
+    renderAdminShell(`
+        <section class="admin-content">
+            <div class="section-heading">
+                <div><p class="eyebrow">PRIVATE ACCOUNT DIRECTORY</p><h2>Users</h2><p class="section-subtitle">Each listed account accepted the required admin-access notice.</p></div>
+            </div>
+            <div class="admin-user-list">
+                ${users.map((user) => `
+                    <button class="admin-user-card" type="button" data-admin-user="${escapeHtml(user.uid)}">
+                        <span class="admin-user-avatar">${escapeHtml((user.displayName || user.email || '?').charAt(0).toUpperCase())}</span>
+                        <span class="admin-user-copy"><strong>${escapeHtml(user.displayName || 'Stoic Daily user')}</strong><span>${escapeHtml(user.email || 'No email recorded')}</span></span>
+                        <span class="admin-user-arrow" aria-hidden="true">↗</span>
+                    </button>`).join('') || '<p class="empty-state">No accepted user accounts are listed yet.</p>'}
+            </div>
+            <div class="admin-pagination">
+                <button class="button button-secondary" type="button" data-action="admin-previous" ${adminDirectoryPreviousCursors.length ? '' : 'disabled'}>Previous</button>
+                <button class="button button-secondary" type="button" data-action="admin-next" ${hasMore ? '' : 'disabled'}>Next</button>
+            </div>
+            <p class="admin-privacy-note">Showing up to 50 accounts per page. Passwords are never available in this directory.</p>
+        </section>`);
+    root.querySelectorAll('[data-admin-user]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const selected = users.find((user) => user.uid === button.dataset.adminUser);
+            if (selected) runSafely(() => loadAdminReflections(selected));
+        });
+    });
+    root.querySelector('[data-action="admin-next"]').addEventListener('click', () => runSafely(async () => {
+        if (!adminDirectoryLastDoc) return;
+        adminDirectoryPreviousCursors.push(adminDirectoryCursor);
+        adminDirectoryCursor = adminDirectoryLastDoc;
+        await loadAdminDirectory();
+    }));
+    root.querySelector('[data-action="admin-previous"]').addEventListener('click', () => runSafely(async () => {
+        if (!adminDirectoryPreviousCursors.length) return;
+        adminDirectoryCursor = adminDirectoryPreviousCursors.pop();
+        await loadAdminDirectory();
+    }));
+}
+
+async function loadAdminReflections(user) {
+    if (!isAdminUser()) throw new Error('Administrator access is restricted to the configured admin account.');
+    const snapshot = await db.collection('users').doc(user.uid)
+        .collection('reflections').orderBy('date', 'desc').limit(100).get();
+    const records = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    renderAdminShell(`
+        <section class="admin-content">
+            <button class="text-button admin-back" type="button" data-action="admin-back">← Back to users</button>
+            <div class="section-heading">
+                <div><p class="eyebrow">USER REFLECTIONS</p><h2>${escapeHtml(user.displayName || 'Stoic Daily user')}</h2><p class="section-subtitle">${escapeHtml(user.email || '')}</p></div>
+            </div>
+            <p class="admin-privacy-note">Showing up to 100 most recent daily reflection records. This view is read-only.</p>
+            <div class="admin-reflection-list">
+                ${records.map(renderAdminReflection).join('') || '<p class="empty-state">No daily reflections have been saved for this account.</p>'}
+            </div>
+        </section>`);
+    root.querySelector('[data-action="admin-back"]').addEventListener('click', () => runSafely(loadAdminDirectory));
+}
+
+function renderAdminReflection(record) {
+    const ambitions = Array.isArray(record.ambitions) ? record.ambitions.filter((item) => item && typeof item === 'object') : [];
+    const controlItems = Array.isArray(record.dichotomyItems) ? record.dichotomyItems.filter((item) => item && typeof item === 'object') : [];
+    const dailyWins = Array.isArray(record.achievements) ? record.achievements : [];
+    const actionSteps = (steps) => Array.isArray(steps) && steps.length
+        ? `<ul>${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join('')}</ul>`
+        : '';
+    const hasContent = record.morningIntentions || ambitions.length || controlItems.length || dailyWins.length
+        || record.eveningReflection || record.self_audit_well || record.self_audit_short || record.lessonsLearned;
+    return `
+        <article class="admin-reflection-card">
+            <div class="admin-reflection-heading"><h3>${escapeHtml(record.date || record.id)}</h3><span>${escapeHtml(record.updatedAt || '')}</span></div>
+            ${record.morningIntentions ? `<section><h4>Morning intention</h4><p>${escapeHtml(record.morningIntentions)}</p></section>` : ''}
+            ${ambitions.length ? `<section><h4>Ambitions</h4><ul>${ambitions.map((item) => `<li><strong>${escapeHtml(item.title || '')}</strong>${item.description ? ` — ${escapeHtml(item.description)}` : ''}${actionSteps(item.actionSteps)}</li>`).join('')}</ul></section>` : ''}
+            ${controlItems.length ? `<section><h4>Control items</h4><ul>${controlItems.map((item) => `<li><strong>${item.category === 'within' ? 'Within control' : 'Outside control'}:</strong> ${escapeHtml(item.text || '')}${item.reframed ? ` — Response: ${escapeHtml(item.reframed)}` : ''}</li>`).join('')}</ul></section>` : ''}
+            ${dailyWins.length ? `<section><h4>Daily wins</h4><ul>${dailyWins.map((item) => `<li>${escapeHtml(typeof item === 'string' ? item : item && typeof item === 'object' ? item.title || '' : '')}</li>`).join('')}</ul></section>` : ''}
+            ${record.eveningReflection ? `<section><h4>Evening reflection</h4><p>${escapeHtml(record.eveningReflection)}</p></section>` : ''}
+            ${record.self_audit_well ? `<section><h4>What went well</h4><p>${escapeHtml(record.self_audit_well)}</p></section>` : ''}
+            ${record.self_audit_short ? `<section><h4>Where they fell short</h4><p>${escapeHtml(record.self_audit_short)}</p></section>` : ''}
+            ${record.lessonsLearned ? `<section><h4>Lessons learned</h4><p>${escapeHtml(record.lessonsLearned)}</p></section>` : ''}
+            ${!hasContent ? '<p class="admin-privacy-note">No reflection details recorded for this day.</p>' : ''}
+        </article>`;
 }
 
 function renderDashboard() {
@@ -370,6 +593,7 @@ function renderDashboard() {
                 <header class="topbar">
                     <div><p class="eyebrow">A CLEARER WAY TO BEGIN</p><h1>Good morning.</h1></div>
                     <div class="topbar-actions">
+                        ${isAdminUser() ? '<button class="button button-secondary" type="button" data-action="open-admin">Admin</button>' : ''}
                         <button class="button button-secondary profile-button" type="button" data-action="open-profile">${avatarMarkup(profile.photoURL, (profile.displayName || currentUser.email || 'S').charAt(0).toUpperCase(), 'profile-avatar')} My profile</button>
                         <div class="date-picker"><span>REFLECTION DATE</span><input type="date" id="reflection-date" value="${escapeHtml(currentDate)}" aria-label="Reflection date"></div>
                     </div>
@@ -506,6 +730,7 @@ function bindDashboardEvents() {
         profileOverlay.hidden = false;
         profileOverlay.querySelector('input[name="displayName"]').focus();
     });
+    root.querySelector('[data-action="open-admin"]')?.addEventListener('click', () => runSafely(openAdminDirectory));
     profileOverlay.querySelectorAll('[data-action="close-profile"]').forEach((button) => {
         button.addEventListener('click', closeProfile);
     });
@@ -715,6 +940,7 @@ function bindDashboardEvents() {
 }
 
 async function enterDashboard() {
+    if (storageMode === 'firebase' && !(await ensureAdminConsent())) return;
     [profile, reflection, achievements] = await Promise.all([
         loadProfile(),
         loadReflection(),

@@ -2,20 +2,53 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email == 'kyambaddealex55@gmail.com';
+    }
+
+    function hasAcceptedAdminAccess(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId))
+        && get(/databases/$(database)/documents/users/$(userId)).data.adminAccessConsentVersion == 'admin-read-v1';
+    }
+
     match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if signedIn() && request.auth.uid == userId;
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && request.resource.data.adminAccessConsentVersion == 'admin-read-v1';
     }
 
     match /users/{userId}/reflections/{reflectionId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read: if signedIn()
+        && ((request.auth.uid == userId && hasAcceptedAdminAccess(userId))
+          || (isAdmin() && hasAcceptedAdminAccess(userId)));
+      allow create, update, delete: if signedIn()
+        && request.auth.uid == userId
+        && hasAcceptedAdminAccess(userId);
     }
 
     match /users/{userId}/achievements/{achievementId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+      allow read, write: if signedIn()
+        && request.auth.uid == userId
+        && hasAcceptedAdminAccess(userId);
+    }
+
+    match /adminDirectory/{userId} {
+      allow get, list: if isAdmin();
+      allow create, update: if signedIn()
+        && request.auth.uid == userId
+        && hasAcceptedAdminAccess(userId)
+        && request.resource.data.keys().hasOnly(['email', 'displayName', 'createdAt', 'updatedAt'])
+        && request.resource.data.email == request.auth.token.email;
     }
 
     match /quotes/{quoteId} {
-      allow read: if request.auth != null;
+      allow read: if signedIn();
       allow write: if false;
     }
   }
